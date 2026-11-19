@@ -54,6 +54,10 @@ button.ghost { background: transparent; }
   display:inline-block; padding: 0.1rem 0.55rem; border-radius: 999px;
   background: var(--accent-soft); color: var(--accent); font-size: 0.8rem;
 }
+.chip.bad { background: #f6ddd6; color: var(--danger); }
+.chip.water { background: #e2ecf8; color: #2f5d8a; }
+.annex { border-top: 1px dashed var(--line); margin-top: 0.6rem; padding-top: 0.4rem; }
+.annex p { margin: 0.15rem 0; font-size: 0.9rem; }
 label { display:block; margin: 0.7rem 0; }
 input { width:100%; margin-top: 0.3rem; padding: 0.55rem 0.7rem; border-radius: 10px; border:1px solid var(--line); font: inherit; }
 .row { display:flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }

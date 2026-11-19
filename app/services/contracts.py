@@ -20,6 +20,41 @@ def _fields(conn, contract_id: int) -> dict[str, str]:
     return {r["field_name"]: r["field_type"] for r in rows}
 
 
+def contract_detail(contract_id: int, db_path: str | None = None) -> dict:
+    """字段详情：水位字段的类型与快照编号取自同一份水位解析结果。"""
+
+    from app.services.watermarks import status as watermark_status
+
+    with get_db(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM schema_contracts WHERE id=?", (contract_id,)
+        ).fetchone()
+        if not row:
+            raise ServiceError("契约不存在", 404)
+        rows = conn.execute(
+            "SELECT field_name, field_type FROM contract_fields "
+            "WHERE contract_id=? ORDER BY id",
+            (contract_id,),
+        ).fetchall()
+
+    watermarks = {
+        i["field_name"]: i for i in watermark_status(db_path=db_path)["items"]
+    }
+    fields = []
+    for r in rows:
+        mark = watermarks.get(r["field_name"])
+        entry = {"field_name": r["field_name"], "field_type": r["field_type"]}
+        if mark and "error" not in mark:
+            entry["watermark"] = {
+                "table_name": mark["table_name"],
+                "type": mark["contract"]["field_type"],
+                "snapshot_no": mark["snapshot_no"],
+                "same_source": mark["same_source"],
+            }
+        fields.append(entry)
+    return {"contract": dict(row), "fields": fields}
+
+
 def run_breaking_check(contract_id: int, db_path: str | None = None) -> dict:
     with get_db(db_path) as conn:
         draft = conn.execute(

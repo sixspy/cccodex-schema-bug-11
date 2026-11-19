@@ -8,13 +8,14 @@ from app.config import Config
 from app.db import init_db
 from app.services import (
     apply_contract,
+    contract_detail,
     list_contracts,
     list_reports,
     run_breaking_check,
     run_reconcile,
 )
 from app.services.errors import ServiceError
-from app.services.watermarks import advance, contract_type, wash_type
+from app.services.watermarks import WatermarkError, advance, refresh, status
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
@@ -37,10 +38,13 @@ def create_app(db_path: str | None = None) -> web.Application:
     app.router.add_post("/api/logout", api_logout)
     app.router.add_get("/api/meta", api_meta)
     app.router.add_get("/api/contracts", api_contracts)
+    app.router.add_get("/api/contracts/{cid}/fields", api_fields)
     app.router.add_post("/api/contracts/{cid}/breaking-check", api_breaking)
     app.router.add_post("/api/contracts/{cid}/apply", api_apply)
     app.router.add_get("/api/reconcile-reports", api_reports)
     app.router.add_post("/api/reconcile-reports", api_reconcile)
+    app.router.add_get("/api/watermarks", api_wm_status)
+    app.router.add_post("/api/watermarks/refresh", api_wm_refresh)
     app.router.add_post("/api/watermark/advance", api_wm_advance)
     return app
 
@@ -125,6 +129,15 @@ async def api_contracts(request: web.Request):
     return json_resp({"items": list_contracts(request.app.get("db_path"))})
 
 
+async def api_fields(request: web.Request):
+    try:
+        require_user(request)
+        cid = int(request.match_info["cid"])
+        return json_resp(contract_detail(cid, request.app.get("db_path")))
+    except ServiceError as exc:
+        return json_resp({"error": exc.message}, exc.status_code)
+
+
 async def api_breaking(request: web.Request):
     try:
         require_user(request)
@@ -161,15 +174,38 @@ async def api_reconcile(request: web.Request):
         return json_resp({"error": exc.message}, exc.status_code)
 
 
+async def api_wm_status(request: web.Request):
+    try:
+        require_user(request)
+        table = request.query.get("table") or None
+        return json_resp(status(table, request.app.get("db_path")))
+    except ServiceError as exc:
+        return json_resp({"error": exc.message}, exc.status_code)
+
+
+async def api_wm_refresh(request: web.Request):
+    try:
+        require_user(request)
+        body = await request.json()
+        operator = str(body.get("operator") or "值班").strip() or "值班"
+        table = str(body.get("table") or "").strip() or None
+        return json_resp(refresh(table, operator, request.app.get("db_path")))
+    except WatermarkError as exc:
+        return json_resp({"error": exc.message}, exc.status_code)
+    except ServiceError as exc:
+        return json_resp({"error": exc.message}, exc.status_code)
+
+
 async def api_wm_advance(request: web.Request):
     try:
         require_user(request)
         body = await request.json()
-        return json_resp({
-            "contract_type": contract_type(request.app.get("db_path")),
-            "wash_type": wash_type(request.app.get("db_path")),
-            "result": advance(body.get("next"), request.app.get("db_path")),
-        })
+        table = str(body.get("table") or "").strip() or None
+        return json_resp(
+            advance(body.get("next"), table, request.app.get("db_path"))
+        )
+    except WatermarkError as exc:
+        return json_resp({"error": exc.message}, exc.status_code)
     except ServiceError as exc:
         return json_resp({"error": exc.message}, exc.status_code)
 

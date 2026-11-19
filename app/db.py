@@ -76,6 +76,57 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- 水位类型凭证的唯一落库形态：快照表逐次收下刷新结果。
+-- 不生成只读类型包，避免两套凭证并存。
+CREATE TABLE IF NOT EXISTS watermark_type_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_no TEXT NOT NULL UNIQUE,
+  table_name TEXT NOT NULL,
+  field_name TEXT NOT NULL,
+  contract_id INTEGER NOT NULL,
+  contract_version INTEGER NOT NULL,
+  contract_type TEXT NOT NULL,
+  wash_type TEXT NOT NULL,
+  resolved_type TEXT NOT NULL,
+  operator TEXT NOT NULL DEFAULT '值班',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS watermark_refresh_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_no TEXT,
+  table_name TEXT NOT NULL,
+  operator TEXT NOT NULL DEFAULT '值班',
+  outcome TEXT NOT NULL,
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS watermark_bindings (
+  table_name TEXT PRIMARY KEY,
+  field_name TEXT NOT NULL
+);
+
+-- 清洗侧当前声明的类型。刷新后必须与契约解析结果一致。
+CREATE TABLE IF NOT EXISTS watermark_wash_config (
+  table_name TEXT PRIMARY KEY,
+  field_type TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS watermark_state (
+  table_name TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 刷新互斥：单行锁。左右值班同时点刷新时只允许一方收拢类型。
+CREATE TABLE IF NOT EXISTS watermark_refresh_lock (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  holder TEXT NOT NULL DEFAULT '',
+  acquired_at TEXT
+);
 """
 
 SEED = [
@@ -84,10 +135,28 @@ SEED = [
     ("dw_payments_d", 1, "现行", "支付现行", [("pay_id", "INT"), ("order_id", "INT"), ("paid_at", "TIMESTAMP")]),
 ]
 
+# 水位列绑定：清洗推进列与契约字段的对应关系。
+WATERMARK_BINDINGS = [
+    ("dw_payments_d", "paid_at"),
+]
+
+# 清洗侧在刷新前声明的类型（与契约不一致即为待收拢的缺陷现场）。
+WATERMARK_WASH_DECLARED = [
+    ("dw_payments_d", "INT"),
+]
+
 
 def init_db(db_path: str | None = None) -> None:
     with get_db(db_path) as conn:
         conn.executescript(SCHEMA)
+        # 旧版把水位类型散在 meta 两个键里，属于第二套凭证形态，一律清掉。
+        conn.execute(
+            "DELETE FROM meta WHERE key IN ('wm_type_contract','wm_type_wash','wm_value')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO watermark_refresh_lock(id, holder, acquired_at) "
+            "VALUES (1, '', NULL)"
+        )
         if conn.execute("SELECT value FROM meta WHERE key='seeded'").fetchone():
             return
         for table, ver, status, note, fields in SEED:
@@ -106,7 +175,19 @@ def init_db(db_path: str | None = None) -> None:
                     "INSERT OR REPLACE INTO catalog_tables(table_name, live_version) VALUES (?,?)",
                     (table, ver),
                 )
+        for table, field in WATERMARK_BINDINGS:
+            conn.execute(
+                "INSERT OR IGNORE INTO watermark_bindings(table_name, field_name) VALUES (?,?)",
+                (table, field),
+            )
+        for table, declared in WATERMARK_WASH_DECLARED:
+            conn.execute(
+                "INSERT OR IGNORE INTO watermark_wash_config(table_name, field_type) "
+                "VALUES (?,?)",
+                (table, declared),
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO watermark_state(table_name, value) VALUES (?,?)",
+            ("dw_payments_d", "2026-11-18 00:00:00"),
+        )
         conn.execute("INSERT INTO meta(key, value) VALUES ('seeded','1')")
-        conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('wm_type_contract','TIMESTAMP')")
-        conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('wm_type_wash','INT')")
-        conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('wm_value','100')")
